@@ -6,6 +6,7 @@
 #include "sd.h"
 #include "dram.h"
 #include "wh1602.h"
+#include "language.h"
 
 //----------------------------------------------------------------------------------------------------
 //макроопределения
@@ -73,13 +74,6 @@
 //константы
 //----------------------------------------------------------------------------------------------------
 
-static const char Text_FAT_Type[] PROGMEM =  "Тип ф. системы  \0";
-static const char Text_FAT32[] PROGMEM =     "FAT32- ошибка!  \0";
-static const char Text_FAT16[] PROGMEM =     "FAT16- ок.      \0";
-static const char Text_FAT12[] PROGMEM =     "FAT12- ошибка!  \0";
-static const char Text_NoFAT[] PROGMEM =     " FAT  не найдена\0";
-static const char Text_MBR_Found[] PROGMEM = "   Найден MBR   \0";
-
 //----------------------------------------------------------------------------------------------------
 //глобальные переменные
 //----------------------------------------------------------------------------------------------------
@@ -93,12 +87,12 @@ uint32_t FATOffset=0;//смещение FAT
 //структура доля поиска файлов внутри каталога
 struct SFATRecordPointer
 {
- uint32_t BeginFolderAddr;//начальный адрес имён файлов внутри директории
- uint32_t CurrentFolderAddr;//текущий адрес имён файлов внутри директории
- uint32_t BeginFolderCluster;//начальный кластер имени файла внутри директории
- uint32_t CurrentFolderCluster;//текущий кластер имени файла внутри директории
- uint32_t BeginFolderClusterAddr;//начальный адрес текущего кластера
- uint32_t EndFolderClusterAddr;//конечный адрес имён файлов внутри директории (или кластера)
+	uint32_t BeginFolderAddr;//начальный адрес имён файлов внутри директории
+	uint32_t CurrentFolderAddr;//текущий адрес имён файлов внутри директории
+	uint32_t BeginFolderCluster;//начальный кластер имени файла внутри директории
+	uint32_t CurrentFolderCluster;//текущий кластер имени файла внутри директории
+	uint32_t BeginFolderClusterAddr;//начальный адрес текущего кластера
+	uint32_t EndFolderClusterAddr;//конечный адрес имён файлов внутри директории (или кластера)
 } sFATRecordPointer;
 
 uint32_t FirstRootFolderAddr;//начальный адрес корневой директории
@@ -109,7 +103,7 @@ uint32_t ResvdSecCnt;//размер резервной области
 
 uint32_t FATSz;//размер таблицы FAT
 uint32_t DataSec;//количество секторов в регионе данных диска
-uint32_t RootDirSectors;//количество секторов, занятых корневой директорией 
+uint32_t RootDirSectors;//количество секторов, занятых корневой директорией
 uint32_t CountofClusters;//количество кластеров для данных (которые начинаются с номера 2! Это КОЛИЧЕСТВО, а не номер последнего кластера)
 uint32_t FirstDataSector;//первый сектор данных
 uint32_t FirstRootFolderSecNum;//начало корневой директории (для FAT16 - это сектор и отдельная область, для FAT32 - это ФАЙЛ в области данных с кластером BPB_RootClus)
@@ -131,116 +125,150 @@ bool FAT_RecordPointerStepReverse(struct SFATRecordPointer *sFATRecordPointerPtr
 //----------------------------------------------------------------------------------------------------
 uint32_t GetByte(uint32_t offset)
 {
- offset+=FATOffset;
- uint32_t s=offset>>8UL;//делим на 256
- if (s!=LastReadSector)
- {
-  LastReadSector=s;
-  bool first=true;
-  if ((offset&0x1ffUL)>=256) first=false;  
-  SD_ReadBlock(s>>1UL,Sector,first);
-  //ошибки не проверяем, всё равно ничего сделать не сможем - либо работает, либо нет
- }
- return(Sector[offset&0xFFUL]);
+	offset+=FATOffset;
+	uint32_t s=offset>>8UL;//делим на 256
+	if (s!=LastReadSector)
+	{
+		LastReadSector=s;
+		bool first=true;
+		if ((offset&0x1ffUL)>=256) first=false;
+		SD_ReadBlock(s>>1UL,Sector,first);
+		//ошибки не проверяем, всё равно ничего сделать не сможем - либо работает, либо нет
+	}
+	return(Sector[offset&0xFFUL]);
 }
+
+
 //----------------------------------------------------------------------------------------------------
 //считать два байта
 //----------------------------------------------------------------------------------------------------
 uint32_t GetShort(uint32_t offset)
 {
- uint32_t v=GetByte(offset+1UL);
- v<<=8UL;
- v|=GetByte(offset);
- return(v);
+	uint32_t v=GetByte(offset+1UL);
+	v<<=8UL;
+	v|=GetByte(offset);
+	return(v);
 }
+
+
 //----------------------------------------------------------------------------------------------------
 //считать 4 байта
 //----------------------------------------------------------------------------------------------------
 uint32_t GetLong(uint32_t offset)
 {
- uint32_t v=GetByte(offset+3UL);
- v<<=8UL;
- v|=GetByte(offset+2UL);
- v<<=8UL;
- v|=GetByte(offset+1UL);
- v<<=8UL;
- v|=GetByte(offset);
- return(v);
+	uint32_t v=GetByte(offset+3UL);
+	v<<=8UL;
+	v|=GetByte(offset+2UL);
+	v<<=8UL;
+	v|=GetByte(offset+1UL);
+	v<<=8UL;
+	v|=GetByte(offset);
+	return(v);
 }
+
+
+
+const uint8_t SupportedExtensions[2][3] PROGMEM =
+{
+	{'T', 'A', 'P'},
+	{'T', 'Z', 'X'},
+};
+
+
+bool CheckFileExtension(struct SFATRecordPointer *recordPointer)
+{
+	uint8_t a = GetByte(recordPointer->CurrentFolderAddr + 10UL);
+	uint8_t b = GetByte(recordPointer->CurrentFolderAddr +  9UL);
+	uint8_t c = GetByte(recordPointer->CurrentFolderAddr +  8UL);
+
+	for (int i = 0; i < 2; ++i)
+	{
+		if (a == SupportedExtensions[i][2] &&
+		b == SupportedExtensions[i][1] &&
+		c == SupportedExtensions[i][0])
+		{
+			return(true);
+		}
+	}
+
+	// No matches found, not supported extension
+	return(false);
+}
+
 
 //----------------------------------------------------------------------------------------------------
 //переместиться по записи вперёд
 //----------------------------------------------------------------------------------------------------
 bool FAT_RecordPointerStepForward(struct SFATRecordPointer *sFATRecordPointerPtr)
 {
- sFATRecordPointerPtr->CurrentFolderAddr+=32UL;//переходим к следующей записи 
- if (sFATRecordPointerPtr->CurrentFolderAddr>=sFATRecordPointerPtr->EndFolderClusterAddr)//вышли за границу кластера или директории
- {
-  if (sFATRecordPointerPtr->BeginFolderAddr==FirstRootFolderAddr)//если у нас закончилась корневая директория
-  {
-   return(false);
-  }  
-  else//для не корневой директории узнаём новый адрес кластера
-  {
-   uint32_t FATClusterOffset=0;//смещение по таблице FAT в байтах (в FAT32 они 4-х байтные, а в FAT16 - двухбайтные)
-   if (FATType==FAT16) FATClusterOffset=sFATRecordPointerPtr->CurrentFolderCluster*2UL;//узнаём смещение в таблице FAT
-   uint32_t NextClusterAddr=ResvdSecCnt*BytsPerSec+FATClusterOffset;//адрес следующего кластера
-   //считываем номер следующего кластера файла
-   uint32_t NextCluster=0;
-   if (FATType==FAT16) NextCluster=GetShort(NextClusterAddr);
-   if (NextCluster==0 || NextCluster>=CountofClusters+2UL || NextCluster>=FAT16_EOC)//такого кластера нет
-   {
-    return(false);        	
-   }
-   sFATRecordPointerPtr->CurrentFolderCluster=NextCluster;//переходим к следующему кластеру
-   uint32_t FirstSectorofCluster=((sFATRecordPointerPtr->CurrentFolderCluster-2UL)*SecPerClus)+FirstDataSector; 
-   sFATRecordPointerPtr->CurrentFolderAddr=FirstSectorofCluster*BytsPerSec; 
-   sFATRecordPointerPtr->BeginFolderClusterAddr=sFATRecordPointerPtr->CurrentFolderAddr;
-   sFATRecordPointerPtr->EndFolderClusterAddr=sFATRecordPointerPtr->CurrentFolderAddr+SecPerClus*BytsPerSec;
-  }
- }
- return(true);
+	sFATRecordPointerPtr->CurrentFolderAddr+=32UL;//переходим к следующей записи
+	if (sFATRecordPointerPtr->CurrentFolderAddr>=sFATRecordPointerPtr->EndFolderClusterAddr)//вышли за границу кластера или директории
+	{
+		if (sFATRecordPointerPtr->BeginFolderAddr==FirstRootFolderAddr)//если у нас закончилась корневая директория
+		{
+			return(false);
+		}
+		else//для не корневой директории узнаём новый адрес кластера
+		{
+			uint32_t FATClusterOffset=0;//смещение по таблице FAT в байтах (в FAT32 они 4-х байтные, а в FAT16 - двухбайтные)
+			if (FATType==FAT16) FATClusterOffset=sFATRecordPointerPtr->CurrentFolderCluster*2UL;//узнаём смещение в таблице FAT
+			uint32_t NextClusterAddr=ResvdSecCnt*BytsPerSec+FATClusterOffset;//адрес следующего кластера
+			//считываем номер следующего кластера файла
+			uint32_t NextCluster=0;
+			if (FATType==FAT16) NextCluster=GetShort(NextClusterAddr);
+			if (NextCluster==0 || NextCluster>=CountofClusters+2UL || NextCluster>=FAT16_EOC)//такого кластера нет
+			{
+				return(false);
+			}
+			sFATRecordPointerPtr->CurrentFolderCluster=NextCluster;//переходим к следующему кластеру
+			uint32_t FirstSectorofCluster=((sFATRecordPointerPtr->CurrentFolderCluster-2UL)*SecPerClus)+FirstDataSector;
+			sFATRecordPointerPtr->CurrentFolderAddr=FirstSectorofCluster*BytsPerSec;
+			sFATRecordPointerPtr->BeginFolderClusterAddr=sFATRecordPointerPtr->CurrentFolderAddr;
+			sFATRecordPointerPtr->EndFolderClusterAddr=sFATRecordPointerPtr->CurrentFolderAddr+SecPerClus*BytsPerSec;
+		}
+	}
+	return(true);
 }
 //----------------------------------------------------------------------------------------------------
 //переместиться по записи назад
 //----------------------------------------------------------------------------------------------------
 bool FAT_RecordPointerStepReverse(struct SFATRecordPointer *sFATRecordPointerPtr)
 {
- sFATRecordPointerPtr->CurrentFolderAddr-=32UL;//возвращаемся на запись назад 
- if (sFATRecordPointerPtr->CurrentFolderAddr<sFATRecordPointerPtr->BeginFolderClusterAddr)//вышли за нижнюю границу кластера
- {
-  if (sFATRecordPointerPtr->BeginFolderAddr==FirstRootFolderAddr)//если у нас корневая директория
-  {
-   return(false);//вышли за пределы директории   
-  }  
-  else//для не корневой директории узнаём новый адрес
-  {
-   uint32_t PrevCluster=sFATRecordPointerPtr->BeginFolderCluster;//предыдущий кластер   
-   while(1)
-   {
-    uint32_t FATClusterOffset=0;//смещение по таблице FAT в байтах (в FAT32 они 4-х байтные, а в FAT16 - двухбайтные)
-    if (FATType==FAT16) FATClusterOffset=PrevCluster*2UL;
-    uint32_t ClusterAddr=ResvdSecCnt*BytsPerSec+FATClusterOffset;//адрес предыдущего кластера
-	uint32_t cluster=GetShort(ClusterAddr);
-    if (cluster<=2 || cluster>=FAT16_EOC)//такого кластера нет
+	sFATRecordPointerPtr->CurrentFolderAddr-=32UL;//возвращаемся на запись назад
+	if (sFATRecordPointerPtr->CurrentFolderAddr<sFATRecordPointerPtr->BeginFolderClusterAddr)//вышли за нижнюю границу кластера
 	{
-     return(false);//вышли за пределы директории        	
+		if (sFATRecordPointerPtr->BeginFolderAddr==FirstRootFolderAddr)//если у нас корневая директория
+		{
+			return(false);//вышли за пределы директории
+		}
+		else//для не корневой директории узнаём новый адрес
+		{
+			uint32_t PrevCluster=sFATRecordPointerPtr->BeginFolderCluster;//предыдущий кластер
+			while(1)
+			{
+				uint32_t FATClusterOffset=0;//смещение по таблице FAT в байтах (в FAT32 они 4-х байтные, а в FAT16 - двухбайтные)
+				if (FATType==FAT16) FATClusterOffset=PrevCluster*2UL;
+				uint32_t ClusterAddr=ResvdSecCnt*BytsPerSec+FATClusterOffset;//адрес предыдущего кластера
+				uint32_t cluster=GetShort(ClusterAddr);
+				if (cluster<=2 || cluster>=FAT16_EOC)//такого кластера нет
+				{
+					return(false);//вышли за пределы директории
+				}
+				if (cluster==sFATRecordPointerPtr->CurrentFolderCluster) break;//мы нашли предшествующий кластер
+				PrevCluster=cluster;
+			}
+			if (PrevCluster<=2 || PrevCluster>=FAT16_EOC)//такого кластера нет
+			{
+				return(false);//вышли за пределы директории
+			}
+			sFATRecordPointerPtr->CurrentFolderCluster=PrevCluster;//переходим к предыдущему кластеру
+			uint32_t FirstSectorofCluster=((sFATRecordPointerPtr->CurrentFolderCluster-2UL)*SecPerClus)+FirstDataSector;
+			sFATRecordPointerPtr->BeginFolderClusterAddr=FirstSectorofCluster*BytsPerSec;
+			sFATRecordPointerPtr->EndFolderClusterAddr=sFATRecordPointerPtr->BeginFolderClusterAddr+SecPerClus*BytsPerSec;
+			sFATRecordPointerPtr->CurrentFolderAddr=sFATRecordPointerPtr->EndFolderClusterAddr-32UL;//на запись назад
+		}
 	}
-	if (cluster==sFATRecordPointerPtr->CurrentFolderCluster) break;//мы нашли предшествующий кластер
-	PrevCluster=cluster;
-   }
-   if (PrevCluster<=2 || PrevCluster>=FAT16_EOC)//такого кластера нет
-   {
-    return(false);//вышли за пределы директории        	
-   }
-   sFATRecordPointerPtr->CurrentFolderCluster=PrevCluster;//переходим к предыдущему кластеру
-   uint32_t FirstSectorofCluster=((sFATRecordPointerPtr->CurrentFolderCluster-2UL)*SecPerClus)+FirstDataSector; 
-   sFATRecordPointerPtr->BeginFolderClusterAddr=FirstSectorofCluster*BytsPerSec; 	
-   sFATRecordPointerPtr->EndFolderClusterAddr=sFATRecordPointerPtr->BeginFolderClusterAddr+SecPerClus*BytsPerSec;
-   sFATRecordPointerPtr->CurrentFolderAddr=sFATRecordPointerPtr->EndFolderClusterAddr-32UL;//на запись назад
-  }
- }
- return(true);
+	return(true);
 }
 
 //----------------------------------------------------------------------------------------------------
@@ -248,463 +276,805 @@ bool FAT_RecordPointerStepReverse(struct SFATRecordPointer *sFATRecordPointerPtr
 //----------------------------------------------------------------------------------------------------
 void FAT_Init(void)
 {
- WH1602_SetTextUpLine("");
- WH1602_SetTextDownLine("");
- //ищем раздел с FAT16
- LastReadSector=0xffffffffUL; 
- FATOffset=0;
- 
- uint8_t b;
- b=GetByte(0); 
- if (b==0xEB || b==0xE9)//это точно не MBR
- {
-  if (GetByte(510UL)==0x55 && GetByte(511UL)==0xAA)//раздел найден и он единственный
-  {
-  }
-  else//раздел не найден
-  {
-   WH1602_SetTextProgmemDownLine(Text_NoFAT);
-   while(1);  
-  }
- }
- else//это, возможно, MBR
- {
-  if (GetByte(510UL)==0x55 && GetByte(511UL)==0xAA)//это MBR, считываем первый раздел
-  {  
-   WH1602_SetTextProgmemUpLine(Text_MBR_Found);
-   _delay_ms(2000);  
-  
-   uint8_t offset[4];
-   size_t partition;
-   for(partition=0;partition<4;partition++)
-   {
-    FATOffset=0;	
-    offset[0]=GetByte(MBR_TABLE_OFFSET+MBR_SIZE_OF_PARTITION_RECORD*partition+MBR_START_IN_LBA+0);
-    offset[1]=GetByte(MBR_TABLE_OFFSET+MBR_SIZE_OF_PARTITION_RECORD*partition+MBR_START_IN_LBA+1);
-    offset[2]=GetByte(MBR_TABLE_OFFSET+MBR_SIZE_OF_PARTITION_RECORD*partition+MBR_START_IN_LBA+2);
-    offset[3]=GetByte(MBR_TABLE_OFFSET+MBR_SIZE_OF_PARTITION_RECORD*partition+MBR_START_IN_LBA+3);
-    FATOffset=*((uint32_t*)offset);
-    FATOffset*=512UL;
-    b=GetByte(0);
-    if ((b==0xEB || b==0xE9) && GetByte(510UL)==0x55 && GetByte(511UL)==0xAA) break;//раздел найден
-   }
-   if (partition==4)//раздел не найден
-   {
-    WH1602_SetTextProgmemDownLine(Text_NoFAT);
-    while(1);  
-   }   
-  }
-  else//это не MBR
-  {
-   WH1602_SetTextProgmemDownLine(Text_NoFAT);
-   while(1);  
-  }
- } 
- 
- LastReadSector=0xffffffffUL;
- 
- SecPerClus=GetByte(BPB_SecPerClus);//количество секторов в кластере
- BytsPerSec=GetShort(BPB_BytsPerSec);//количество байт в секторе
- ResvdSecCnt=GetShort(BPB_ResvdSecCnt);//размер резервной области
- 
- //определяем количество секторов, занятых корневой директорией 
- RootDirSectors=(uint32_t)(ceil((GetShort(BPB_RootEntCnt)*32UL+(BytsPerSec-1UL))/BytsPerSec));
- //определяем размер таблицы FAT
- FATSz=GetShort(BPB_FATSz16);//размер одной таблицы FAT в секторах
- if (FATSz==0) FATSz=GetLong(BPB_FATSz32);
- //определяем количество секторов в регионе данных диска
- uint32_t TotSec=GetShort(BPB_TotSec16);//общее количество секторов на диске
- if (TotSec==0) TotSec=GetLong(BPB_TotSec32);
- DataSec=TotSec-(ResvdSecCnt+GetByte(BPB_NumFATs)*FATSz+RootDirSectors);
- //определяем количество кластеров для данных (которые начинаются с номера 2! Это КОЛИЧЕСТВО, а не номер последнего кластера)
- CountofClusters=(uint32_t)floor(DataSec/SecPerClus);
- //определяем первый сектор данных
- FirstDataSector=ResvdSecCnt+(GetByte(BPB_NumFATs)*FATSz)+RootDirSectors;
- //определим тип файловой системы
+	WH1602_SetTextUpLine("");
+	WH1602_SetTextDownLine("");
+	//ищем раздел с FAT16
+	LastReadSector=0xffffffffUL;
+	FATOffset=0;
+	
+	uint8_t b;
+	b=GetByte(0);
+	if (b==0xEB || b==0xE9)//это точно не MBR
+	{
+		if (GetByte(510UL)==0x55 && GetByte(511UL)==0xAA)//раздел найден и он единственный
+		{
+		}
+		else//раздел не найден
+		{
+			WH1602_SetTextProgmemDownLine(Text_FS_NoFAT);
+			while(1);
+		}
+	}
+	else//это, возможно, MBR
+	{
+		if (GetByte(510UL)==0x55 && GetByte(511UL)==0xAA)//это MBR, считываем первый раздел
+		{
+			WH1602_SetTextProgmemUpLine(Text_FS_MBR_Found);
+			_delay_ms(2000);
+			
+			uint8_t offset[4];
+			size_t partition;
+			for(partition=0;partition<4;partition++)
+			{
+				FATOffset=0;
+				offset[0]=GetByte(MBR_TABLE_OFFSET+MBR_SIZE_OF_PARTITION_RECORD*partition+MBR_START_IN_LBA+0);
+				offset[1]=GetByte(MBR_TABLE_OFFSET+MBR_SIZE_OF_PARTITION_RECORD*partition+MBR_START_IN_LBA+1);
+				offset[2]=GetByte(MBR_TABLE_OFFSET+MBR_SIZE_OF_PARTITION_RECORD*partition+MBR_START_IN_LBA+2);
+				offset[3]=GetByte(MBR_TABLE_OFFSET+MBR_SIZE_OF_PARTITION_RECORD*partition+MBR_START_IN_LBA+3);
+				FATOffset=*((uint32_t*)offset);
+				FATOffset*=512UL;
+				b=GetByte(0);
+				if ((b==0xEB || b==0xE9) && GetByte(510UL)==0x55 && GetByte(511UL)==0xAA) break;//раздел найден
+			}
+			if (partition==4)//раздел не найден
+			{
+				WH1602_SetTextProgmemDownLine(Text_FS_NoFAT);
+				while(1);
+			}
+		}
+		else//это не MBR
+		{
+			WH1602_SetTextProgmemDownLine(Text_FS_NoFAT);
+			while(1);
+		}
+	}
+	
+	LastReadSector=0xffffffffUL;
+	
+	SecPerClus=GetByte(BPB_SecPerClus);//количество секторов в кластере
+	BytsPerSec=GetShort(BPB_BytsPerSec);//количество байт в секторе
+	ResvdSecCnt=GetShort(BPB_ResvdSecCnt);//размер резервной области
+	
+	//определяем количество секторов, занятых корневой директорией
+	RootDirSectors=(uint32_t)(ceil((GetShort(BPB_RootEntCnt)*32UL+(BytsPerSec-1UL))/BytsPerSec));
+	//определяем размер таблицы FAT
+	FATSz=GetShort(BPB_FATSz16);//размер одной таблицы FAT в секторах
+	if (FATSz==0) FATSz=GetLong(BPB_FATSz32);
+	//определяем количество секторов в регионе данных диска
+	uint32_t TotSec=GetShort(BPB_TotSec16);//общее количество секторов на диске
+	if (TotSec==0) TotSec=GetLong(BPB_TotSec32);
+	DataSec=TotSec-(ResvdSecCnt+GetByte(BPB_NumFATs)*FATSz+RootDirSectors);
+	//определяем количество кластеров для данных (которые начинаются с номера 2! Это КОЛИЧЕСТВО, а не номер последнего кластера)
+	CountofClusters=(uint32_t)floor(DataSec/SecPerClus);
+	//определяем первый сектор данных
+	FirstDataSector=ResvdSecCnt+(GetByte(BPB_NumFATs)*FATSz)+RootDirSectors;
+	//определим тип файловой системы
 
- FATType=FAT12;
- WH1602_SetTextProgmemUpLine(Text_FAT_Type);
- if (CountofClusters<4085UL)
- {
-  WH1602_SetTextProgmemDownLine(Text_FAT12);
-  while(1);
- }
- else
- {
-  if (CountofClusters<65525UL)
-  {
-   WH1602_SetTextProgmemDownLine(Text_FAT16);
-   _delay_ms(2000);
-   FATType=FAT16;
-  }
-  else
-  {
-   WH1602_SetTextProgmemDownLine(Text_FAT32);
-   FATType=FAT32;
-   while(1);   
-  }
- }
- if (FATType==FAT12) return;//не поддерживаем
- if (FATType==FAT32) return;//не поддерживаем
- //определяем начало корневой директории (для FAT16 - это сектор и отдельная область, для FAT32 - это ФАЙЛ в области данных с кластером BPB_RootClus)
- FirstRootFolderSecNum=ResvdSecCnt+(GetByte(BPB_NumFATs)*FATSz);
- ClusterSize=SecPerClus*BytsPerSec;//размер кластера в байтах
+	FATType=FAT12;
+	WH1602_SetTextProgmemUpLine(Text_FS_Type);
+	if (CountofClusters<4085UL)
+	{
+		WH1602_SetTextProgmemDownLine(Text_FS_FAT12);
+		while(1);
+	}
+	else
+	{
+		if (CountofClusters<65525UL)
+		{
+			WH1602_SetTextProgmemDownLine(Text_FS_FAT16);
+			_delay_ms(2000);
+			FATType=FAT16;
+		}
+		else
+		{
+			WH1602_SetTextProgmemDownLine(Text_FS_FAT32);
+			FATType=FAT32;
+			while(1);
+		}
+	}
+	if (FATType==FAT12) return;//не поддерживаем
+	if (FATType==FAT32) return;//не поддерживаем
+	//определяем начало корневой директории (для FAT16 - это сектор и отдельная область, для FAT32 - это ФАЙЛ в области данных с кластером BPB_RootClus)
+	FirstRootFolderSecNum=ResvdSecCnt+(GetByte(BPB_NumFATs)*FATSz);
+	ClusterSize=SecPerClus*BytsPerSec;//размер кластера в байтах
 
- //читаем корневую директорию
- FirstRootFolderAddr=FirstRootFolderSecNum*BytsPerSec;//начальный адрес корневой директории
- //настраиваем структуру для поиска внутри директории
- sFATRecordPointer.BeginFolderAddr=FirstRootFolderAddr;//начальный адрес имён файлов внутри директории
- sFATRecordPointer.CurrentFolderAddr=sFATRecordPointer.BeginFolderAddr;//текущий адрес имён файлов внутри директории
- sFATRecordPointer.BeginFolderCluster=0;//начальный кластер имени файла внутри директории
- sFATRecordPointer.CurrentFolderCluster=0;//текущий кластер имени файла внутри директории
- sFATRecordPointer.EndFolderClusterAddr=sFATRecordPointer.BeginFolderAddr+(RootDirSectors*BytsPerSec);//конечный адрес имён файлов внутри директории (или кластера)
- sFATRecordPointer.BeginFolderClusterAddr=sFATRecordPointer.CurrentFolderAddr;//адрес начального кластера директории
+	//читаем корневую директорию
+	FirstRootFolderAddr=FirstRootFolderSecNum*BytsPerSec;//начальный адрес корневой директории
+	//настраиваем структуру для поиска внутри директории
+	sFATRecordPointer.BeginFolderAddr=FirstRootFolderAddr;//начальный адрес имён файлов внутри директории
+	sFATRecordPointer.CurrentFolderAddr=sFATRecordPointer.BeginFolderAddr;//текущий адрес имён файлов внутри директории
+	sFATRecordPointer.BeginFolderCluster=0;//начальный кластер имени файла внутри директории
+	sFATRecordPointer.CurrentFolderCluster=0;//текущий кластер имени файла внутри директории
+	sFATRecordPointer.EndFolderClusterAddr=sFATRecordPointer.BeginFolderAddr+(RootDirSectors*BytsPerSec);//конечный адрес имён файлов внутри директории (или кластера)
+	sFATRecordPointer.BeginFolderClusterAddr=sFATRecordPointer.CurrentFolderAddr;//адрес начального кластера директории
 }
+
+
 //----------------------------------------------------------------------------------------------------
 //начать поиск файла в кталоге
 //----------------------------------------------------------------------------------------------------
 bool FAT_BeginFileSearch(void)
 {
- uint32_t FirstCluster;//первый кластер файла
- uint32_t Size;//размер файла
- int8_t directory;//не директория ли файл
- int8_t hidden;//не скрытый ли файл
- int8_t system;//не системный ли файл 
- 
- sFATRecordPointer.CurrentFolderAddr=sFATRecordPointer.BeginFolderAddr;
- sFATRecordPointer.CurrentFolderCluster=sFATRecordPointer.BeginFolderCluster;
- sFATRecordPointer.BeginFolderClusterAddr=sFATRecordPointer.CurrentFolderAddr;
- if (sFATRecordPointer.BeginFolderAddr!=FirstRootFolderAddr)//это не корневая директория
- {
-  sFATRecordPointer.EndFolderClusterAddr=sFATRecordPointer.BeginFolderAddr+SecPerClus*BytsPerSec;
- }
- else sFATRecordPointer.EndFolderClusterAddr=sFATRecordPointer.BeginFolderAddr+(RootDirSectors*BytsPerSec);//конечный адрес имён файлов внутри директории (или кластера)
- //переходим к первому нужному нам файлу
- while(1)
- {
-  if (FAT_GetFileSearch(NULL,&FirstCluster,&Size,&directory,&hidden,&system)==false)
-  {
-   if (FAT_NextFileSearch()==false) return(false);
-  }
-  else
-  {
-   if (hidden==0 && system==0) return(true);//системные и скрытые файлы пропускаем
-  }
- }
- return(false);
+	uint32_t FirstCluster;//первый кластер файла
+	uint32_t Size;//размер файла
+	int8_t directory;//не директория ли файл
+	int8_t hidden;//не скрытый ли файл
+	int8_t system;//не системный ли файл
+	
+	sFATRecordPointer.CurrentFolderAddr=sFATRecordPointer.BeginFolderAddr;
+	sFATRecordPointer.CurrentFolderCluster=sFATRecordPointer.BeginFolderCluster;
+	sFATRecordPointer.BeginFolderClusterAddr=sFATRecordPointer.CurrentFolderAddr;
+	if (sFATRecordPointer.BeginFolderAddr!=FirstRootFolderAddr)//это не корневая директория
+	{
+		sFATRecordPointer.EndFolderClusterAddr=sFATRecordPointer.BeginFolderAddr+SecPerClus*BytsPerSec;
+	}
+	else
+	{
+		//конечный адрес имён файлов внутри директории (или кластера)
+		sFATRecordPointer.EndFolderClusterAddr=sFATRecordPointer.BeginFolderAddr+(RootDirSectors*BytsPerSec);
+	}
+	//переходим к первому нужному нам файлу
+	while(1)
+	{
+		if (FAT_GetFileSearch(NULL, &FirstCluster, &Size, &directory, &hidden, &system) == false)
+		{
+			if (FAT_NextFileSearch()==false) return(false);
+		}
+		else
+		{
+			if (hidden==0 && system==0) return(true);//системные и скрытые файлы пропускаем
+		}
+	}
+	return(false);
 }
+
+
 //----------------------------------------------------------------------------------------------------
 //перейти к предыдущему файлу в каталоге
 //----------------------------------------------------------------------------------------------------
 bool FAT_PrevFileSearch(void)
 {
- struct SFATRecordPointer sFATRecordPointer_Copy=sFATRecordPointer;
- while(1)
- {
-  if (FAT_RecordPointerStepReverse(&sFATRecordPointer_Copy)==false) return(false);  
-  //анализируем имя файла
-  uint8_t n;
-  bool res=true;
-  for(n=0;n<11;n++)
-  {
-   uint8_t b=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+(uint32_t)(n));
-   if (n==0)
-   {
-    if (b==0x20 || b==0xE5)
+	struct SFATRecordPointer sFATRecordPointer_Copy=sFATRecordPointer;
+	while(1)
 	{
-     res=false;
-     break;	
+		if (FAT_RecordPointerStepReverse(&sFATRecordPointer_Copy)==false) return(false);
+		//анализируем имя файла
+		uint8_t n;
+		bool res=true;
+		for(n=0;n<11;n++)
+		{
+			uint8_t b=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+(uint32_t)(n));
+			if (n==0)
+			{
+				if (b==0x20 || b==0xE5)
+				{
+					res=false;
+					break;
+				}
+			}
+			if (b<0x20)
+			{
+				res=false;
+				break;
+			}
+			if (n==1)
+			{
+				uint8_t a=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr);
+				uint8_t b=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+1UL);
+				if (a==(uint8_t)'.' && b!=(uint8_t)'.')
+				{
+					res=false;
+					break;
+				}
+			}
+		}
+		//смотрим расширение
+		if (res==true)
+		{
+			uint8_t type=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+11UL);
+			if (type&ATTR_VOLUME_ID) continue;//этот файл - имя диска
+			if (type&ATTR_HIDDEN) continue;//этот файл скрытый
+			if (type&ATTR_SYSTEM) continue;//этот файл системный
+			
+			if ((type&ATTR_DIRECTORY)==0)//это файл
+			{
+				// Check file extension, skip not supported files
+				bool isFileSupported = CheckFileExtension(&sFATRecordPointer_Copy);
+				if (isFileSupported == false) {
+					continue;
+				}
+			}
+			sFATRecordPointer=sFATRecordPointer_Copy;
+			return(true);
+		}
 	}
-   }
-   if (b<0x20)
-   {
-    res=false;
-    break;
-   }
-   if (n==1)
-   {
-    uint8_t a=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr);
-    uint8_t b=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+1UL);
-    if (a==(uint8_t)'.' && b!=(uint8_t)'.')
-    {
-     res=false; 
-	 break;
-    }	
-   }   
-  }
-  //смотрим расширение
-  if (res==true)
-  {  
-   uint8_t type=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+11UL);
-   if (type&ATTR_VOLUME_ID) continue;//этот файл - имя диска
-   if (type&ATTR_HIDDEN) continue;//этот файл скрытый
-   if (type&ATTR_SYSTEM) continue;//этот файл системный   
-   
-   if ((type&ATTR_DIRECTORY)==0)//это файл
-   {
-    uint8_t a=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+10UL);
-    uint8_t b=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+9UL);
-    uint8_t c=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+8UL);
-    if (!(a=='P' && b=='A' && c=='T')) continue;//неверное расширение
-   }
-   sFATRecordPointer=sFATRecordPointer_Copy;
-   return(true);
-  }
- }
- return(false);
+	return(false);
 }
+
 //----------------------------------------------------------------------------------------------------
 //перейти к следующему файлу в каталоге
 //----------------------------------------------------------------------------------------------------
 bool FAT_NextFileSearch(void)
 {
- struct SFATRecordPointer sFATRecordPointer_Copy=sFATRecordPointer;
- while(1)
- {
-  if (FAT_RecordPointerStepForward(&sFATRecordPointer_Copy)==false) return(false); 
-  uint8_t n;
-  bool res=true;
-  for(n=0;n<11;n++)
-  {
-   uint8_t b=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+(uint32_t)(n));
-   if (n==0)
-   {
-    if (b==0x20 || b==0xE5)
+	struct SFATRecordPointer sFATRecordPointer_Copy=sFATRecordPointer;
+	while(1)
 	{
-     res=false;
-     break;	
+		if (FAT_RecordPointerStepForward(&sFATRecordPointer_Copy)==false) return(false);
+		uint8_t n;
+		bool res=true;
+		for(n=0;n<11;n++)
+		{
+			uint8_t b=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+(uint32_t)(n));
+			if (n==0)
+			{
+				if (b==0x20 || b==0xE5)
+				{
+					res=false;
+					break;
+				}
+			}
+			if (b<0x20)
+			{
+				res=false;
+				break;
+			}
+			if (n==1)
+			{
+				uint8_t a=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr);
+				uint8_t b=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+1UL);
+				if (a==(uint8_t)'.' && b!=(uint8_t)'.')
+				{
+					res=false;
+					break;
+				}
+			}
+		}
+		if (res==true)
+		{
+			uint8_t type=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+11UL);
+			if (type&ATTR_VOLUME_ID) continue;//этот файл - имя диска
+			if (type&ATTR_HIDDEN) continue;//этот файл скрытый
+			if (type&ATTR_SYSTEM) continue;//этот файл системный
+			if ((type&ATTR_DIRECTORY)==0)//это файл
+			{
+				// Check file extension, skip not supported files
+				bool isFileSupported = CheckFileExtension(&sFATRecordPointer_Copy);
+				if (isFileSupported == false) {
+					continue;
+				}
+			}
+			sFATRecordPointer=sFATRecordPointer_Copy;
+			return(true);
+		}
 	}
-   }
-   if (b<0x20)
-   {
-    res=false;
-    break;
-   }
-   if (n==1)
-   {
-    uint8_t a=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr);
-    uint8_t b=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+1UL);
-    if (a==(uint8_t)'.' && b!=(uint8_t)'.')
-    {
-     res=false; 
-	 break;
-    }	
-   }     
-  }
-  if (res==true)
-  {
-   uint8_t type=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+11UL);
-   if (type&ATTR_VOLUME_ID) continue;//этот файл - имя диска    
-   if (type&ATTR_HIDDEN) continue;//этот файл скрытый
-   if (type&ATTR_SYSTEM) continue;//этот файл системный   
-   if ((type&ATTR_DIRECTORY)==0)//это файл
-   {
-    uint8_t a=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+10UL);
-    uint8_t b=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+9UL);
-    uint8_t c=GetByte(sFATRecordPointer_Copy.CurrentFolderAddr+8UL);
-    if (!(a=='P' && b=='A' && c=='T')) continue;//неверное расширение
-   }
-   sFATRecordPointer=sFATRecordPointer_Copy;
-   return(true);
-  }
- }
- return(false);
+	return(false);
 }
+
+
 //----------------------------------------------------------------------------------------------------
 //получить параметры текущего найденного файла в каталоге
 //----------------------------------------------------------------------------------------------------
 bool FAT_GetFileSearch(char *filename,uint32_t *FirstCluster,uint32_t *Size,int8_t *directory,int8_t *hidden,int8_t *system)
 {
- uint8_t n;
- bool res=true;
- *directory=0;
- *hidden=0;
- *system=0;
- if (filename!=NULL)
- {
-  for(n=0;n<11;n++) filename[n]=32;
- }
- for(n=0;n<11;n++)
- {    
-  uint8_t b=GetByte(sFATRecordPointer.CurrentFolderAddr+(uint32_t)(n));
-  if (n==0)
-  {
-   if (b==0x20 || b==0xE5)
-   {
-    res=false;
-    break;	
-   }
-  }
-  if (b<0x20)
-  {
-   res=false;
-   break;
-  }
-  if (filename!=NULL)
-  {
-   if (n<8) filename[n]=b;
-       else filename[n+1]=b;
-  }
-  if (n==1)
-  {
-   uint8_t a=GetByte(sFATRecordPointer.CurrentFolderAddr);
-   uint8_t b=GetByte(sFATRecordPointer.CurrentFolderAddr+1UL);
-   if (a==(uint8_t)'.' && b!=(uint8_t)'.')
-   {
-    res=false; 
-    break;
-   }	
-  }     
- }
- if (res==true)
- {
-  uint8_t type=GetByte(sFATRecordPointer.CurrentFolderAddr+11UL);  
-  if (type&ATTR_VOLUME_ID) return(false);//этот файл - имя диска  
-  if ((type&ATTR_DIRECTORY)==0)//это файл
-  {
-   uint8_t a=GetByte(sFATRecordPointer.CurrentFolderAddr+10UL);
-   uint8_t b=GetByte(sFATRecordPointer.CurrentFolderAddr+9UL);
-   uint8_t c=GetByte(sFATRecordPointer.CurrentFolderAddr+8UL);
-   if (!(a=='P' && b=='A' && c=='T')) return(false);//неверное расширение
-  }
-  else//если это директория
-  {
-   uint8_t a=GetByte(sFATRecordPointer.CurrentFolderAddr);
-   uint8_t b=GetByte(sFATRecordPointer.CurrentFolderAddr+1UL);  
-   if (a==(uint8_t)'.' && b==(uint8_t)'.') *directory=-1;//на директорию выше
-                                        else *directory=1;//на директорию ниже
-  }
-  if (type&ATTR_SYSTEM) *system=1;
-  if (type&ATTR_HIDDEN) *hidden=1;  
-  //первый кластер файла  
-  *FirstCluster=(GetShort(sFATRecordPointer.CurrentFolderAddr+20UL)<<16)|GetShort(sFATRecordPointer.CurrentFolderAddr+26UL);
-  //узнаём размер файла в байтах
-  *Size=GetLong(sFATRecordPointer.CurrentFolderAddr+28UL);
-  if (filename!=NULL)
-  {
-   if ((type&ATTR_DIRECTORY)==0) filename[8]='.';//файлу добавляем точку    
-   filename[12]=0;   
-   //поищем длинное имя файла   
-   struct SFATRecordPointer sFATRecordPointer_Local=sFATRecordPointer;
-   uint8_t long_name_length=0;
-   while(1)
-   {
-    if (FAT_RecordPointerStepReverse(&sFATRecordPointer_Local)==false) break;
-    uint8_t attr=GetByte(sFATRecordPointer_Local.CurrentFolderAddr+11UL);
-    if ((attr&ATTR_LONG_NAME)==ATTR_LONG_NAME)//это длинное имя
-    {
-     //собираем полное имя
-     uint8_t name_index=GetByte(sFATRecordPointer_Local.CurrentFolderAddr);
-     for(n=0;n<10 && long_name_length<=16;n+=2,long_name_length++) filename[long_name_length]=GetByte(sFATRecordPointer_Local.CurrentFolderAddr+n+1UL);
-     for(n=0;n<12 && long_name_length<=16;n+=2,long_name_length++) filename[long_name_length]=GetByte(sFATRecordPointer_Local.CurrentFolderAddr+n+14UL);
-	 for(n=0;n<4 && long_name_length<=16;n+=2,long_name_length++) filename[long_name_length]=GetByte(sFATRecordPointer_Local.CurrentFolderAddr+n+28UL);
-	 if (long_name_length>16) break;
-     if (name_index&0x40) break;//последняя часть имени
-    }
-    else break;//это не длинное имя
-   }
-   if (long_name_length>16) long_name_length=16;
-   if (long_name_length>0) filename[long_name_length]=0;
-  }
-  return(true);
- }
- return(false); 
+	uint8_t n;
+	bool res=true;
+	*directory=0;
+	*hidden=0;
+	*system=0;
+	if (filename!=NULL)
+	{
+		for(n=0;n<11;n++) filename[n]=32;
+	}
+	for(n=0;n<11;n++)
+	{
+		uint8_t b=GetByte(sFATRecordPointer.CurrentFolderAddr+(uint32_t)(n));
+		if (n==0)
+		{
+			if (b==0x20 || b==0xE5)
+			{
+				res=false;
+				break;
+			}
+		}
+		if (b<0x20)
+		{
+			res=false;
+			break;
+		}
+		if (filename!=NULL)
+		{
+			if (n<8) filename[n]=b;
+			else filename[n+1]=b;
+		}
+		if (n==1)
+		{
+			uint8_t a=GetByte(sFATRecordPointer.CurrentFolderAddr);
+			uint8_t b=GetByte(sFATRecordPointer.CurrentFolderAddr+1UL);
+			if (a==(uint8_t)'.' && b!=(uint8_t)'.')
+			{
+				res=false;
+				break;
+			}
+		}
+	}
+	if (res==true)
+	{
+		uint8_t type=GetByte(sFATRecordPointer.CurrentFolderAddr+11UL);
+		if (type&ATTR_VOLUME_ID) return(false);//этот файл - имя диска
+		if ((type&ATTR_DIRECTORY)==0)//это файл
+		{
+			// Check file extension
+			bool isFileSupported = CheckFileExtension(&sFATRecordPointer);
+			if (isFileSupported == false) {
+				return(false);
+			}
+		}
+		else//если это директория
+		{
+			uint8_t a=GetByte(sFATRecordPointer.CurrentFolderAddr);
+			uint8_t b=GetByte(sFATRecordPointer.CurrentFolderAddr+1UL);
+			if (a==(uint8_t)'.' && b==(uint8_t)'.') *directory=-1;//на директорию выше
+			else *directory=1;//на директорию ниже
+		}
+		if (type&ATTR_SYSTEM) *system=1;
+		if (type&ATTR_HIDDEN) *hidden=1;
+		//первый кластер файла
+		*FirstCluster=(GetShort(sFATRecordPointer.CurrentFolderAddr+20UL)<<16)|GetShort(sFATRecordPointer.CurrentFolderAddr+26UL);
+		//узнаём размер файла в байтах
+		*Size=GetLong(sFATRecordPointer.CurrentFolderAddr+28UL);
+		if (filename!=NULL)
+		{
+			if ((type&ATTR_DIRECTORY) == 0)
+			{
+				// файлу добавляем точку
+				filename[8] = '.';
+			}
+			filename[12]=0;
+
+			//поищем длинное имя файла
+			struct SFATRecordPointer sFATRecordPointer_Local=sFATRecordPointer;
+			uint8_t long_name_length=0;
+			while(1)
+			{
+				if (FAT_RecordPointerStepReverse(&sFATRecordPointer_Local)==false) break;
+				uint8_t attr=GetByte(sFATRecordPointer_Local.CurrentFolderAddr+11UL);
+				if ((attr&ATTR_LONG_NAME)==ATTR_LONG_NAME)//это длинное имя
+				{
+					//собираем полное имя
+					uint8_t name_index=GetByte(sFATRecordPointer_Local.CurrentFolderAddr);
+					for(n=0;n<10 && long_name_length<=16;n+=2,long_name_length++) filename[long_name_length]=GetByte(sFATRecordPointer_Local.CurrentFolderAddr+n+1UL);
+					for(n=0;n<12 && long_name_length<=16;n+=2,long_name_length++) filename[long_name_length]=GetByte(sFATRecordPointer_Local.CurrentFolderAddr+n+14UL);
+					for(n=0;n<4 && long_name_length<=16;n+=2,long_name_length++) filename[long_name_length]=GetByte(sFATRecordPointer_Local.CurrentFolderAddr+n+28UL);
+					if (long_name_length>16) break;
+					if (name_index&0x40) break;//последняя часть имени
+				}
+				else break;//это не длинное имя
+			}
+			if (long_name_length>16) long_name_length=16;
+			if (long_name_length>0) filename[long_name_length]=0;
+		}
+		return(true);
+	}
+	return(false);
 }
+
+
 //----------------------------------------------------------------------------------------------------
 //зайти в директорию и найти первый файл
 //----------------------------------------------------------------------------------------------------
 bool FAT_EnterDirectory(uint32_t FirstCluster)
-{ 
- if (FirstCluster==0UL)//это корневая директория (номер первого кластера, распределяемого директории)
- {
-  sFATRecordPointer.BeginFolderAddr=FirstRootFolderAddr; 
-  sFATRecordPointer.EndFolderClusterAddr=sFATRecordPointer.BeginFolderAddr+(RootDirSectors*BytsPerSec);//конечный адрес имён файлов внутри директории (или кластера)
- }
- else
- {
-  uint32_t FirstSectorofCluster=((FirstCluster-2UL)*SecPerClus)+FirstDataSector; 
-  sFATRecordPointer.BeginFolderAddr=FirstSectorofCluster*BytsPerSec;//начальный адрес имён файлов внутри директории
-  sFATRecordPointer.EndFolderClusterAddr=sFATRecordPointer.BeginFolderAddr+SecPerClus*BytsPerSec;
- }
- sFATRecordPointer.BeginFolderCluster=FirstCluster;//начальный кластер имени файла внутри директории
- sFATRecordPointer.CurrentFolderCluster=sFATRecordPointer.BeginFolderCluster;//текущий кластер имени файла внутри директории
- sFATRecordPointer.CurrentFolderAddr=sFATRecordPointer.BeginFolderAddr;//текущий адрес имён файлов внутри директории
- sFATRecordPointer.BeginFolderClusterAddr=sFATRecordPointer.BeginFolderAddr; 
- return(FAT_BeginFileSearch());
+{
+	if (FirstCluster==0UL)//это корневая директория (номер первого кластера, распределяемого директории)
+	{
+		sFATRecordPointer.BeginFolderAddr=FirstRootFolderAddr;
+		sFATRecordPointer.EndFolderClusterAddr=sFATRecordPointer.BeginFolderAddr+(RootDirSectors*BytsPerSec);//конечный адрес имён файлов внутри директории (или кластера)
+	}
+	else
+	{
+		uint32_t FirstSectorofCluster=((FirstCluster-2UL)*SecPerClus)+FirstDataSector;
+		sFATRecordPointer.BeginFolderAddr=FirstSectorofCluster*BytsPerSec;//начальный адрес имён файлов внутри директории
+		sFATRecordPointer.EndFolderClusterAddr=sFATRecordPointer.BeginFolderAddr+SecPerClus*BytsPerSec;
+	}
+	sFATRecordPointer.BeginFolderCluster=FirstCluster;//начальный кластер имени файла внутри директории
+	sFATRecordPointer.CurrentFolderCluster=sFATRecordPointer.BeginFolderCluster;//текущий кластер имени файла внутри директории
+	sFATRecordPointer.CurrentFolderAddr=sFATRecordPointer.BeginFolderAddr;//текущий адрес имён файлов внутри директории
+	sFATRecordPointer.BeginFolderClusterAddr=sFATRecordPointer.BeginFolderAddr;
+	return(FAT_BeginFileSearch());
 }
+
+//----------------------------------------------------------------------------------------------------
+// Parse TAP file
+//----------------------------------------------------------------------------------------------------
+inline bool FAT_CacheTapFileBlock(uint16_t *BlockSize, uint16_t Block, uint16_t *current_block, uint32_t addr, uint32_t length, uint32_t *i, uint8_t *mode, uint16_t *dram_addr, uint16_t *block_size)
+{
+	for (uint32_t m = 0; m < length; m++, (*i)++)
+	{
+		// Regenerate DRAM
+		DRAM_Refresh();
+		uint8_t b = GetByte(addr + m);
+
+		// Reading low byte of block length
+		if (*mode == 0)
+		{
+			*block_size = b;
+			*mode = 1;
+			continue;
+		}
+
+		// Reading high byte of block length
+		if (*mode == 1)
+		{
+			*block_size |= ((uint16_t)b) << 8;
+			*mode = 2;
+			*dram_addr = 0;
+			continue;
+		}
+
+		// Reading data for block
+		if (*mode == 2)
+		{
+			if (*current_block == Block)
+			{
+				// Cache data for the selected block
+				DRAM_WriteByte(*dram_addr, b);
+			}
+			(*dram_addr)++;
+			// Block finished
+			if (*dram_addr >= *block_size)
+			{
+				// Reading for selected block finished
+				if (*current_block == Block)
+				{
+					*BlockSize = *block_size;
+					return(true);
+				}
+				// Go to next block
+				*block_size = 0;
+				(*current_block)++;
+				*mode = 0;
+			}
+		}
+	}
+
+	return(false);
+}
+
+
+
+//----------------------------------------------------------------------------------------------------
+// Parse TZX file
+//----------------------------------------------------------------------------------------------------
+inline bool FAT_CacheTzxFileBlock(uint16_t *BlockSize, uint16_t Block, uint16_t *current_block, uint32_t addr, uint32_t length, uint32_t *i, uint8_t *mode, uint16_t *dram_addr, uint16_t *block_size)
+{
+	// Block ID
+	uint8_t block_id;
+	// Pause length before the block
+	uint16_t pause_size = 0;
+	// Flag for the block
+	uint8_t flag;
+
+	for (uint32_t m = 0; m < length; m++, (*i)++)
+	{
+		// Regenerate DRAM
+		DRAM_Refresh();
+		uint8_t b = GetByte(addr + m);
+
+		// Reading Offset 0 ID Byte (16 for a ROM-Saved block)
+		if (*mode == 0)
+		{
+			block_id = b;
+			*mode = 1; // go to next
+		}
+
+		// Reading Offset 1 The length of the pause after this block in milliseconds (Low byte) (1000ms default)
+		if (*mode == 1)
+		{
+			pause_size = b;
+			*mode = 2;
+			continue;
+		}
+
+
+		// Reading Offset 2 The length of the pause after this block in milliseconds (High byte) (1000ms default)
+		if (*mode == 2)
+		{
+			pause_size |= ((uint16_t)b) << 8;
+			*mode = 3;
+			continue;
+		}
+
+		// Reading offset 3 Length of the block (Low byte)
+		if (*mode == 3)
+		{
+			*block_size = b;
+			*mode = 4;
+			continue;
+		}
+
+		// Reading offset 4 Length of the block (Hight byte)
+		if (*mode == 4)
+		{
+			*block_size |= ((uint16_t)b) << 8;
+			*mode = 5;
+			*dram_addr = 0;
+			continue;
+		}
+
+		// Reading offset 5 Flag byte (0 for a header, 255 for the body of the file)
+		if (*mode == 5)
+		{
+			flag = b;
+			if (flag == 0)
+			{
+				// Header block detected, skip it
+				*block_size = 0;
+				*mode = 0;
+				continue;
+			}
+			else
+			{
+				// Data block detected
+				*mode = 6;
+				*dram_addr = 0;
+				continue;
+			}
+		}
+
+		// Reading data for block
+		if (*mode == 6)
+		{
+			if (*current_block == Block)
+			{
+				// Cache data for the selected block
+				DRAM_WriteByte(*dram_addr, b);
+			}
+			(*dram_addr)++;
+			// Block finished
+			if (*dram_addr >= *block_size)
+			{
+				// Reading for selected block finished
+				if (*current_block == Block)
+				{
+					*BlockSize = *block_size;
+					return(true);
+				}
+				// Go to next block
+				*block_size = 0;
+				(*current_block)++;
+				*mode = 0;
+			}
+		}
+	}
+
+	return(false);
+}
+
 //----------------------------------------------------------------------------------------------------
 //записать в ОЗУ блок файла
 //----------------------------------------------------------------------------------------------------
-bool FAT_WriteBlock(uint16_t *BlockSize,uint16_t Block)
+bool FAT_WriteBlockOld(uint16_t *BlockSize, uint16_t Block)
 {
- uint32_t CurrentCluster;
- uint32_t Size;
+	uint32_t CurrentCluster;
+	uint32_t Size;
 
- uint32_t i=0;//номер считываемого байта файла
- uint16_t dram_addr=0;//адрес в динамической памяти
- uint16_t current_block=0;//текущий номер блока
- uint16_t block_size=0;//размер блока
- int8_t directory;//не директория ли файл
- int8_t hidden;//скрытый ли файл
- int8_t system;//системный ли файл
- *BlockSize=0;
- if (FAT_GetFileSearch(String,&CurrentCluster,&Size,&directory,&hidden,&system)==false) return(false); 
- uint8_t mode=0;
- while(i<Size)
- {
-  DRAM_Refresh();//производим регенерацию памяти 
-  //считываем данные
-  uint32_t length=ClusterSize;
-  if (length+i>=Size) length=Size-i;
-  //получаем первый сектор кластера
-  uint32_t FirstSectorofCluster=((CurrentCluster-2UL)*SecPerClus)+FirstDataSector; 
-  uint32_t addr=FirstSectorofCluster*BytsPerSec;
-  for(uint32_t m=0;m<length;m++,i++)
-  {
-   DRAM_Refresh();//производим регенерацию памяти
-   uint8_t b=GetByte(addr+m);
-   if (mode==0)//чтение младшего байта длины
-   {
-    block_size=b;
-	mode=1;
-	continue;
-   }
-   if (mode==1)//чтение старшего байта длины
-   {
-    block_size|=((uint16_t)b)<<8;
-	mode=2;
-	dram_addr=0;
-	continue;
-   }
-   if (mode==2)//чтение данных
-   {
-    if (current_block==Block) DRAM_WriteByte(dram_addr,b);//это выбранный блок
-	dram_addr++;
-	if (dram_addr>=block_size)//блок закончен
+	// File index
+	uint32_t i = 0;
+	// current block
+	uint16_t current_block = 0;
+	// File is directory
+	int8_t directory;
+	// File hidden
+	int8_t hidden;
+	// System file
+	int8_t system;
+
+	// DRAM address
+	uint16_t dram_addr = 0;
+	// Block size
+	uint16_t block_size = 0;
+
+	*BlockSize = 0;
+	if (FAT_GetFileSearch(String, &CurrentCluster, &Size, &directory, &hidden, &system) == false)
 	{
-	 if (current_block==Block)//закончился выбранный блок
-	 {
-	  *BlockSize=block_size;  
-	  return(true);
-	 }
-	 //переходим к следующему блоку
-	 block_size=0;
-	 current_block++;
-	 mode=0;
+		return(false);
 	}
-   } 
-  }
-  //переходим к следующему кластеру файла
-  uint32_t FATClusterOffset=0;//смещение по таблице FAT в байтах (в FAT32 они 4-х байтные, а в FAT16 - двухбайтные)
-  if (FATType==FAT16) FATClusterOffset=CurrentCluster*2UL;
-  uint32_t NextClusterAddr=ResvdSecCnt*BytsPerSec+FATClusterOffset;//адрес следующего кластера
-  //считываем номер следующего кластера файла
-  uint32_t NextCluster=0;
-  if (FATType==FAT16) NextCluster=GetShort(NextClusterAddr);
-  if (NextCluster==0) break;//неиспользуемый кластер
-  if (NextCluster>=CountofClusters+2UL) break;//номер больше максимально возможного номера кластера - конец файла или сбой
-  CurrentCluster=NextCluster;
- }
- //конец файла
- return(false);
+
+	uint8_t mode = 0;
+
+	while(i < Size)
+	{
+		//производим регенерацию памяти
+		DRAM_Refresh();
+		//считываем данные
+		uint32_t length = ClusterSize;
+		if (length + i >= Size)
+		{
+			length = Size - i;
+		}
+
+		//получаем первый сектор кластера
+		uint32_t FirstSectorofCluster = ((CurrentCluster - 2UL) * SecPerClus) + FirstDataSector;
+		uint32_t addr = FirstSectorofCluster * BytsPerSec;
+
+		for (uint32_t m = 0; m < length; m++, i++)
+		{
+			// Regenerate DRAM
+			DRAM_Refresh();
+			uint8_t b = GetByte(addr + m);
+
+			// Reading low byte of block length
+			if (mode == 0)
+			{
+				block_size = b;
+				mode = 1;
+				continue;
+			}
+
+			// Reading high byte of block length
+			if (mode == 1)
+			{
+				block_size |= ((uint16_t)b) << 8;
+				mode = 2;
+				dram_addr = 0;
+				continue;
+			}
+
+			// Reading data for block
+			if (mode == 2)
+			{
+				if (current_block == Block)
+				{
+					// Cache data for the selected block
+					DRAM_WriteByte(dram_addr, b);
+				}
+				dram_addr++;
+				// Block finished
+				if (dram_addr >= block_size)
+				{
+					// Reading for selected block finished
+					if (current_block == Block)
+					{
+						*BlockSize = block_size;
+						return(true);
+					}
+					// Go to next block
+					block_size = 0;
+					current_block++;
+					mode = 0;
+				}
+			}
+		}
+
+		// Go to next cluster for file
+		uint32_t FATClusterOffset = 0;//смещение по таблице FAT в байтах (в FAT32 они 4-х байтные, а в FAT16 - двухбайтные)
+		if (FATType == FAT16)
+		{
+			FATClusterOffset = CurrentCluster * 2UL;
+		}
+		// Next cluster address
+		uint32_t NextClusterAddr = ResvdSecCnt * BytsPerSec + FATClusterOffset;
+		// Get number of next cluster
+		uint32_t NextCluster = 0;
+		if (FATType == FAT16)
+		{
+			NextCluster = GetShort(NextClusterAddr);
+		}
+		if (NextCluster == 0)
+		{
+			// No next clusters
+			break;
+		}
+		if (NextCluster >= CountofClusters + 2UL)
+		{
+			// Cluster address is out of possible limit, EOF or error
+			break;
+		}
+		CurrentCluster = NextCluster;
+	}
+	
+	// End of file
+	return(false);
+}
+
+
+bool FAT_WriteBlock(uint16_t *BlockSize, uint16_t Block)
+{
+	uint32_t CurrentCluster;
+	uint32_t Size;
+
+	uint32_t i = 0;// File index
+	uint16_t current_block = 0;// current block
+	int8_t directory;// File is directory
+	int8_t hidden;// File hidden
+	int8_t system;// System file
+
+	*BlockSize = 0;
+	if (FAT_GetFileSearch(String, &CurrentCluster, &Size, &directory, &hidden, &system) == false)
+	{
+		return(false);
+	}
+
+	// Detect method to parse block
+	uint8_t a = GetByte(sFATRecordPointer.CurrentFolderAddr + 10UL);
+	uint8_t b = GetByte(sFATRecordPointer.CurrentFolderAddr +  9UL);
+	uint8_t c = GetByte(sFATRecordPointer.CurrentFolderAddr +  8UL);
+
+	bool isTzx = false;
+
+	if (a == 'P' && b == 'A' && c == 'T')
+	{
+		isTzx = false;
+	}
+	if (a == 'X' && b == 'Z' && c == 'T')
+	{
+		isTzx = true;
+	}
+
+	uint8_t mode = 0;
+
+	// DRAM address
+	uint16_t dram_addr = 0;
+	// Block size
+	uint16_t block_size = 0;
+
+	while(i < Size)
+	{
+		//производим регенерацию памяти
+		DRAM_Refresh();
+		//считываем данные
+		uint32_t length = ClusterSize;
+		if (length + i >= Size)
+		{
+			length = Size - i;
+		}
+		//получаем первый сектор кластера
+		uint32_t FirstSectorofCluster = ((CurrentCluster - 2UL) * SecPerClus) + FirstDataSector;
+		uint32_t addr = FirstSectorofCluster * BytsPerSec;
+
+		bool res = false;
+		// Read/parse/cache bytes for current block at current cluster
+		if (isTzx == true) {
+			res = FAT_CacheTzxFileBlock(BlockSize, Block, &current_block, addr, length, &i, &mode, &dram_addr, &block_size);
+		}
+		else
+		{
+			res = FAT_CacheTapFileBlock(BlockSize, Block, &current_block, addr, length, &i, &mode, &dram_addr, &block_size);
+		}
+
+		if (res == true)
+		{
+			return (true);
+		}
+
+		// Go to next cluster for file
+		//смещение по таблице FAT в байтах (в FAT32 они 4-х байтные, а в FAT16 - двухбайтные)
+		uint32_t FATClusterOffset = 0;
+		if (FATType == FAT16)
+		{
+			FATClusterOffset = CurrentCluster * 2UL;
+		}
+		// Next cluster address
+		uint32_t NextClusterAddr = ResvdSecCnt * BytsPerSec + FATClusterOffset;
+		// Get number of next cluster
+		uint32_t NextCluster = 0;
+		if (FATType == FAT16)
+		{
+			NextCluster = GetShort(NextClusterAddr);
+		}
+		if (NextCluster == 0)
+		{
+			// No next clusters
+			break;
+		}
+		if (NextCluster >= CountofClusters + 2UL)
+		{
+			// Cluster address is out of possible limit, EOF or error
+			break;
+		}
+		CurrentCluster = NextCluster;
+
+	} // while(i < Size)
+	
+	// End of file
+	return(false);
 }
